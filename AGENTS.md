@@ -281,3 +281,10 @@ command. The user reviews on GitHub and clicks Publish.
 - Compare capture coverage against all daily archive files; daemon dedup spans days, so absence from today's file alone is not a loss.
 - Verify full article blocks independently of preview capture and verify the running extension version after reload.
 - Keep user recordings, credentials and profiles out of fixtures and git; sanitize source evidence before committing it.
+
+## Public repository privacy
+
+- Never publish personal environment details: local usernames, hostnames, absolute home paths, account handles, account IDs, browsing history, raw logs, screenshots, profiles, cookies, tokens or credentials. This applies to source, fixtures, documentation, commit messages, issues, PRs and uploaded artifacts.
+- Preserve lessons as general instructions and synthetic regression cases. Do not publish live-session counts, timestamps or other private-session evidence as commit rationale; cite reproducible synthetic tests instead.
+- Before pushing, inspect the entire staged diff, new files and commit metadata for identifying data. Review fixture text, IDs, URLs and embedded metadata; a directory named sanitized is not proof of anonymization. Never put the real identifiers into a committed denylist or test.
+- Use the configured public GitHub identity and noreply email for commits; never substitute a local account identity or private email. Keep raw evidence outside the checkout and verify it is absent from tracked files and public uploads.
