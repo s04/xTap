@@ -274,3 +274,10 @@ command. The user reviews on GitHub and clicks Publish.
 - Preserve every supplied video variant and thumbnail URL; keep the best MP4 in `media[].url` for downloader compatibility.
 - Capture nested quotes and reposted originals as separate posts with their own author and media.
 - Run the isolated Firefox pipeline check in `tests/e2e/firefox-jsonl-test.py` for capture or lifecycle changes; never replay fixtures against X or a production archive.
+
+## Capture validation rules
+
+- Run `mise run check`; use `docs/guides/capture-testing.md` for browser checks and live verification.
+- Compare capture coverage against all daily archive files; daemon dedup spans days, so absence from today's file alone is not a loss.
+- Verify full article blocks independently of preview capture and verify the running extension version after reload.
+- Keep user recordings, credentials and profiles out of fixtures and git; sanitize source evidence before committing it.

@@ -446,3 +446,9 @@ Run `uv run --with camoufox==0.5.9 --with marionette-driver python tests/e2e/fir
 For interactive Camoufox testing, enable its `allow_addon_new_tab=True` option so extension dashboard tabs are permitted. Keep the profile and generated browser configuration persistent. Camoufox needs the Playwright version supported by its package; a newer driver can reject its protocol.
 
 Capture remains passive: article bodies and video URLs are retained only when supplied to the browser. ID-only references and unavailable posts cannot supply missing content. Discovery dumps and debug logs are private diagnostic data; do not commit them.
+
+### Developing and verifying capture
+
+Run `mise run check` for the regression suite. See
+[Capture testing](docs/guides/capture-testing.md) for isolated Firefox and
+Chromium checks, live archive audits, and browser installation gotchas.
