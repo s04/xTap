@@ -1,4 +1,4 @@
-name: E2E — Chromium
+name: E2E browser capture
 
 on:
   push:
@@ -33,3 +33,20 @@ jobs:
       - name: Run E2E golden-JSONL test
         working-directory: tests/e2e
         run: npm test
+
+  firefox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Firefox test driver
+        run: pip install camoufox==0.5.9 marionette-driver==3.7.1
+      - name: Install Firefox runtime dependencies
+        run: python -m playwright install-deps firefox
+      - name: Install Camoufox
+        run: python -m camoufox fetch
+      - name: Test capture and recovery across Firefox restarts
+        run: python tests/e2e/firefox-jsonl-test.py

@@ -55,7 +55,7 @@ function createMockStorage() {
       return Promise.resolve(result);
     },
     set(items) {
-      Object.assign(data, items);
+      Object.assign(data, structuredClone(items));
       return Promise.resolve();
     },
     remove(keys) {
@@ -323,7 +323,7 @@ describe('flush in-flight durability', () => {
 
     // If the SW were killed right now, persisted state must still contain
     // tweet 1 — its WAL entry was already cleared and seenIds blocks recapture.
-    const persisted = await env.sessionStore.get(null);
+    const persisted = await env.localStore.get(null);
     assert.ok(persisted.tweetBuffer.some(t => t.id === '1'),
       'in-flight batch missing from persisted buffer — SW death here loses it');
 
@@ -339,7 +339,7 @@ describe('flush in-flight durability', () => {
     // Drained exactly once each, nothing left behind.
     assert.deepEqual(posted, [['1'], ['2']]);
     assert.equal(env.buffer.length, 0);
-    const after = await env.sessionStore.get(null);
+    const after = await env.localStore.get(null);
     assert.deepEqual(after.tweetBuffer, []);
   });
 

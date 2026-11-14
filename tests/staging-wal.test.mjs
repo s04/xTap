@@ -28,6 +28,7 @@ const testSource = bgSource
       set seenIds(v) { seenIds = v; },
       get traceEvents() { return traceEvents; },
       MAX_BUFFER_SIZE,
+      get sessionCount() { return sessionCount; },
     };`
   );
 
@@ -47,7 +48,7 @@ function createMockStorage(opts = {}) {
         return Promise.reject(new Error('QuotaExceededError'));
       if (opts.throwOnStateWrite && ('seenIds' in items || 'tweetBuffer' in items))
         return Promise.reject(new Error('QuotaExceededError'));
-      Object.assign(data, items);
+      Object.assign(data, structuredClone(items));
       return Promise.resolve();
     },
     remove(keys) {
@@ -64,8 +65,8 @@ function createMockStorage(opts = {}) {
  * Returns the exposed internals (with live getters/setters) plus storage mocks.
  */
 function setup(opts = {}) {
-  const sessionStore = createMockStorage(opts.sessionOpts);
-  const localStore = createMockStorage(opts.localOpts);
+  const sessionStore = opts.sessionStore || createMockStorage(opts.sessionOpts);
+  const localStore = opts.localStore || createMockStorage(opts.localOpts);
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
@@ -127,13 +128,13 @@ describe('stagePayload + clearStagedPayload', () => {
   });
 
   it('returns null on quota error', async () => {
-    const env = setup({ sessionOpts: { throwOnStagingWrite: true } });
+    const env = setup({ localOpts: { throwOnStagingWrite: true } });
     const key = await env.stagePayload('HomeTimeline', { foo: 1 });
     assert.equal(key, null);
   });
 
   it('emits STAGE_FAILED trace event on quota error', async () => {
-    const env = setup({ sessionOpts: { throwOnStagingWrite: true } });
+    const env = setup({ localOpts: { throwOnStagingWrite: true } });
     await env.stagePayload('HomeTimeline', { foo: 1 });
     const failEvents = env.traceEvents.filter(e => e.status === 'STAGE_FAILED');
     assert.equal(failEvents.length, 1);
@@ -227,7 +228,7 @@ describe('recoverStagedPayloads', () => {
   it('keeps WAL entry when saveState fails', async () => {
     const env = setup({
       extractTweets: (_ep, data) => data?.tweets || [],
-      sessionOpts: { throwOnStateWrite: true },
+      localOpts: { throwOnStateWrite: true },
     });
 
     // Stage works (stg_* keys aren't blocked by throwOnStateWrite)
@@ -275,7 +276,7 @@ describe('saveState / restoreState buffer persistence', () => {
   });
 
   it('returns false on storage error (coupled write)', async () => {
-    const env = setup({ sessionOpts: { throwOnStateWrite: true } });
+    const env = setup({ localOpts: { throwOnStateWrite: true } });
 
     env.buffer = [{ id: '1', text: 'buffered' }];
     env.seenIds = new Set(['1']);
@@ -336,5 +337,65 @@ describe('buffer overflow', () => {
     const overflowEvents = env.traceEvents.filter(e => e.status === 'BUFFER_OVERFLOW');
     assert.equal(overflowEvents.length, 1);
     assert.ok(overflowEvents[0].reason.includes('dropped 1'));
+  });
+});
+
+
+describe('Firefox background and browser restarts', () => {
+  it('keeps the session counter when only the background page restarts', async () => {
+    const first = setup();
+    first.enqueueTweets([{ id: 'captured' }]);
+    assert.equal(await first.saveState(), true);
+    const restarted = setup({ sessionStore: first.sessionStore, localStore: first.localStore });
+    await restarted.restoreState();
+    assert.equal(restarted.sessionCount, 1);
+    restarted.enqueueTweets([{ id: 'captured' }, { id: 'next' }]);
+    assert.equal(restarted.sessionCount, 2);
+  });
+
+  it('keeps pending posts and dedup after browser restart, with a fresh session count', async () => {
+    const first = setup();
+    first.enqueueTweets([{ id: 'pending' }]);
+    await first.saveState();
+    const restarted = setup({ localStore: first.localStore });
+    await restarted.restoreState();
+    assert.equal(restarted.sessionCount, 0);
+    assert.equal(restarted.buffer[0].id, 'pending');
+    restarted.enqueueTweets([{ id: 'pending' }]);
+    assert.equal(restarted.buffer.length, 1);
+  });
+
+  it('recovers a staged response after the browser clears session storage', async () => {
+    const first = setup();
+    await first.stagePayload('HomeTimeline', { tweets: [{ id: 'staged' }] });
+    const restarted = setup({ localStore: first.localStore, extractTweets: (_, data) => data.tweets });
+    await restarted.restoreState();
+    await restarted.recoverStagedPayloads();
+    assert.equal(restarted.buffer[0].id, 'staged');
+  });
+
+  it('migrates the installed Firefox session queue once without replaying stale data', async () => {
+    const first = setup();
+    await first.sessionStore.set({ seenIds: ['old'], tweetBuffer: [{ id: 'old' }], sessionCount: 7,
+      stg_123_0: { endpoint: 'HomeTimeline', data: { tweets: [{ id: 'staged' }] } } });
+    await first.restoreState();
+    assert.equal(first.buffer[0].id, 'old');
+    assert.equal(first.sessionCount, 7);
+    assert.ok((await first.localStore.get(null)).stg_123_0);
+    assert.equal((await first.sessionStore.get(null)).tweetBuffer, undefined);
+    first.buffer = [];
+    await first.saveState();
+    const next = setup({ localStore: first.localStore, sessionStore: first.sessionStore });
+    await next.restoreState();
+    assert.equal(next.buffer.length, 0);
+  });
+
+  it('does not delete the legacy queue when migration cannot persist it', async () => {
+    const env = setup({ localOpts: { throwOnStateWrite: true } });
+    await env.sessionStore.set({ seenIds: ['old'], tweetBuffer: [{ id: 'old' }] });
+    await env.restoreState();
+    assert.equal(env.buffer[0].id, 'old');
+    assert.ok(env.seenIds.has('old'));
+    assert.equal((await env.sessionStore.get('tweetBuffer')).tweetBuffer[0].id, 'old');
   });
 });

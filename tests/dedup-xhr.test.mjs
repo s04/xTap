@@ -317,3 +317,37 @@ describe('XHR stale mapping — GraphQL open followed by non-GraphQL re-open', (
       'response of a non-GraphQL request must not be dispatched under the stale GraphQL URL');
   });
 });
+
+describe('valid browser response forms', () => {
+  it('captures fetch called with a URL object', async () => {
+    const env = createBrowserEnv();
+    const response = { clone: () => ({ json: async () => ({ data: { value: 1 } }) }) };
+    env.window.fetch = async () => response;
+    runInNewContext(contentMainCode, { ...env, URL, console });
+    assert.equal(await env.window.fetch(new URL('https://x.com/i/api/graphql/hash/HomeTimeline')), response);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(env.dispatched.length, 1);
+    assert.equal(env.dispatched[0].endpoint, 'HomeTimeline');
+  });
+
+  it('captures an XHR whose responseType is json without reading responseText', () => {
+    const env = createBrowserEnv();
+    runInNewContext(contentMainCode, { ...env, URL, console });
+    const xhr = new env.XMLHttpRequest();
+    xhr.open('GET', 'https://x.com/i/api/graphql/hash/HomeTimeline');
+    xhr.responseType = 'json';
+    xhr.response = { data: { value: 1 } };
+    Object.defineProperty(xhr, 'responseText', { get() { throw new Error('InvalidStateError'); } });
+    for (const listener of xhr._listeners.load) listener.call(xhr);
+    assert.equal(env.dispatched.length, 1);
+    assert.deepEqual(env.dispatched[0].data, xhr.response);
+  });
+});
+
+it('article preview cannot suppress the later full article body', () => {
+  const seen = new Set();
+  assert.equal(dedupTweet({ id:'article', is_article_preview:true, article_preview:{title:'Preview',text:'Partial'} },seen),true);
+  assert.equal(seen.has('article:article'),false);
+  assert.equal(dedupTweet({ id:'article', is_article:true, article:{title:'Full',text:'Complete body'} },seen),true);
+  assert.equal(dedupTweet({ id:'article', is_article:true },seen),false);
+});

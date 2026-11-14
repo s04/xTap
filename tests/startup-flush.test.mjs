@@ -23,17 +23,18 @@ const testSource = bgSource.replace(/^import\b.*$/gm, '');
 // silently stop testing the startup path.
 assert.ok(bgSource.includes('// --- Init ---'), 'Init marker missing from background.js');
 
-function createMockStorage(initial = {}) {
+function createMockStorage(initial = {}, failFirstRead = false) {
   let data = { ...initial };
   return {
     get(keys) {
+      if (failFirstRead) { failFirstRead = false; return Promise.reject(new Error('transient storage read')); }
       if (keys === null) return Promise.resolve({ ...data });
       const result = {};
       const list = Array.isArray(keys) ? keys : [keys];
       for (const k of list) if (k in data) result[k] = data[k];
       return Promise.resolve(result);
     },
-    set(items) { Object.assign(data, items); return Promise.resolve(); },
+    set(items) { Object.assign(data, structuredClone(items)); return Promise.resolve(); },
     remove(keys) {
       const list = Array.isArray(keys) ? keys : [keys];
       for (const k of list) delete data[k];
@@ -54,9 +55,9 @@ function until(cond, ms = 2000) {
   });
 }
 
-function bootSW({ sessionSeed = {}, localSeed = {} } = {}) {
+function bootSW({ sessionSeed = {}, localSeed = {}, failFirstRead = false } = {}) {
   const sessionStore = createMockStorage(sessionSeed);
-  const localStore = createMockStorage(localSeed);
+  const localStore = createMockStorage(localSeed, failFirstRead);
   const fetches = [];   // { url, method, body }
   const alarms = { created: [], listener: null };
 
@@ -129,7 +130,7 @@ describe('service worker startup', () => {
     const deadline = Date.now() + 2000;
     let persisted;
     do {
-      persisted = await sw.sessionStore.get(['tweetBuffer']);
+      persisted = await sw.localStore.get(['tweetBuffer']);
       if ((persisted.tweetBuffer || []).length === 0) break;
       await new Promise(r => setTimeout(r, 5));
     } while (Date.now() < deadline);
@@ -151,4 +152,13 @@ describe('service worker startup', () => {
     assert.equal(sw.alarms.created.length, 0,
       'no alarm needed when nothing is buffered');
   });
+});
+
+
+it('retries a failed state read before flushing, retaining the existing queue', async () => {
+  const sw=bootSW({failFirstRead:true, localSeed:{httpToken:'token',httpPort:17381,
+    tweetBuffer:[{id:'must-survive'}],seenIds:['must-survive'],durableCaptureState:true}});
+  await until(()=>sw.fetches.some(f=>f.url.includes('/tweets')));
+  const post=sw.fetches.find(f=>f.url.includes('/tweets'));
+  assert.deepEqual(JSON.parse(post.body).tweets.map(t=>t.id),['must-survive']);
 });

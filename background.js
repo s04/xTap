@@ -27,7 +27,7 @@ let imageDownload = false;
 let debugLogging = false;
 let verboseLogging = false;
 let logBuffer = [];
-const isDevMode = !chrome.runtime.getManifest().update_url;
+const sessionStorage = chrome.storage.session || chrome.storage.local;
 const hasSessionStorage = !!chrome.storage.session;
 const traceStorage = chrome.storage.session || chrome.storage.local;
 let stageSeq = 0;
@@ -51,15 +51,12 @@ let httpPort = null;
 // --- State persistence ---
 
 function seenIdsStorage() {
-  return (isDevMode && hasSessionStorage) ? chrome.storage.session : chrome.storage.local;
+  return chrome.storage.local;
 }
 
-// Staging uses session whenever available (ephemeral — cleared on browser restart).
-// seenIdsStorage() uses session only in dev mode. In production, seenIds goes to
-// local for persistence while WAL entries stay in session (they only need to survive
-// SW suspension, not browser restart). Firefox without session falls back to local.
+// Pending responses must survive browser restarts, not just background suspension.
 function stagingStorage() {
-  return hasSessionStorage ? chrome.storage.session : chrome.storage.local;
+  return chrome.storage.local;
 }
 
 async function stagePayload(endpoint, data) {
@@ -149,14 +146,8 @@ async function _saveStateImpl() {
   // would create ghost-dedup entries that permanently block those tweets).
   const seenArr = [...seenIds].slice(-MAX_SEEN_IDS);
   try {
-    if (isDevMode && hasSessionStorage) {
-      await Promise.all([
-        chrome.storage.session.set({ seenIds: seenArr, tweetBuffer: buffer }),
-        chrome.storage.local.set({ allTimeCount, captureEnabled }),
-      ]);
-    } else {
-      await chrome.storage.local.set({ seenIds: seenArr, tweetBuffer: buffer, allTimeCount, captureEnabled });
-    }
+    await chrome.storage.local.set({ seenIds: seenArr, tweetBuffer: buffer, allTimeCount, captureEnabled, durableCaptureState: true });
+    await sessionStorage.set({ sessionCount });
     return true;
   } catch (e) {
     console.warn('[xTap] Failed to persist state:', e.message);
@@ -165,10 +156,29 @@ async function _saveStateImpl() {
 }
 
 async function restoreState() {
-  const [seenStored, stored] = await Promise.all([
+  const [seenStored, stored, session] = await Promise.all([
     seenIdsStorage().get(['seenIds', 'tweetBuffer']),
-    chrome.storage.local.get(['allTimeCount', 'captureEnabled', 'outputDir', 'imageDownload', 'debugLogging', 'verboseLogging']),
+    chrome.storage.local.get(['allTimeCount', 'captureEnabled', 'outputDir', 'imageDownload', 'debugLogging', 'verboseLogging', 'durableCaptureState']),
+    sessionStorage.get(null),
   ]);
+  // Migrate the old Firefox/dev session queue before accepting new captures.
+  // Commit locally first; a failed migration must leave its source intact.
+  if (!stored.durableCaptureState && hasSessionStorage &&
+      (session.seenIds || session.tweetBuffer || Object.keys(session).some(k => k.startsWith('stg_')))) {
+    const pending = [...(seenStored.tweetBuffer || []), ...(session.tweetBuffer || [])];
+    seenStored.tweetBuffer = [...new Map(pending.map(t => [JSON.stringify(t), t])).values()];
+    seenStored.seenIds = [...new Set([...(seenStored.seenIds || []), ...(session.seenIds || [])])];
+    const staged = Object.fromEntries(Object.entries(session).filter(([k]) => k.startsWith('stg_')));
+    try {
+      await chrome.storage.local.set({ ...seenStored, ...staged, durableCaptureState: true });
+      await chrome.storage.session.remove(['seenIds', 'tweetBuffer', ...Object.keys(staged)]);
+    } catch (e) {
+      // Still restore the merged queue in memory. Otherwise the next save
+      // could replace it with defaults after a transient migration failure.
+      console.warn('[xTap] Legacy state migration will retry:', e.message);
+    }
+  }
+  if (typeof session.sessionCount === 'number') sessionCount = session.sessionCount;
   if (seenStored.seenIds) seenIds = new Set(seenStored.seenIds.filter(Boolean));
   if (Array.isArray(seenStored.tweetBuffer)) buffer = seenStored.tweetBuffer;
   if (typeof stored.allTimeCount === 'number') allTimeCount = stored.allTimeCount;
@@ -979,11 +989,20 @@ if (typeof chrome.storage.session?.setAccessLevel === 'function') {
   chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
 }
 
-// Graceful degradation: if restoreState fails (e.g. storage unavailable), continue
-// with defaults so the extension still captures tweets.
-restoreState().catch((e) => {
-  console.error('[xTap] Failed to restore state:', e);
-}).then(async () => {
+// Never overwrite unread durable state with empty defaults after a read error.
+async function restoreWithRetry() {
+  for (;;) {
+    try {
+      await restoreState();
+      return;
+    } catch (e) {
+      console.error('[xTap] Failed to restore state; retrying:', e);
+      updateTransportBadge();
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+}
+restoreWithRetry().then(async () => {
   await recoverStagedPayloads();
   readyResolve();
   updateBadge();
@@ -999,6 +1018,5 @@ restoreState().catch((e) => {
     flushTimer = setTimeout(() => { scheduledFlush(); scheduleNextFlush(); }, FLUSH_INTERVAL_MS + jitter);
   }
   scheduleNextFlush();
-  const seenStorageLabel = (isDevMode && hasSessionStorage) ? 'session' : 'local';
-  console.log(`[xTap] Service worker started (${isDevMode ? 'dev' : 'production'} mode, seenIds in ${seenStorageLabel} storage)`);
+  console.log('[xTap] Background started (durable local capture state)');
 });

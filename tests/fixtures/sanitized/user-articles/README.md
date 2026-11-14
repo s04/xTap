@@ -10,8 +10,8 @@ article stub without full body content.
 - Timeline instruction parsing (TimelineAddEntries)
 - Single tweet items (TimelineTimelineItem)
 - Conversation modules (TimelineTimelineModule)
-- Article stubs skipped when full content is unavailable
-- Empty parser output when no complete tweets remain
+- Article previews retained until a full body is observed
+- Explicit preview markers distinguish incomplete article content
 
 ## Raw input
 
@@ -42,7 +42,7 @@ and author references remain internally consistent.
 ## Invariants
 
 - `fixture.json` fed to `extractTweets("UserArticlesTweets", data)` must produce
-  exactly 0 tweets matching `expected.jsonl`
+  exactly 12 tweets matching `expected.jsonl`
 - All `in_reply_to`, `quoted_tweet_id`, and `conversation_id` values that
   reference tweets in the fixture use the same remapped IDs
 - Author IDs and handles are consistent across all tweets by the same user

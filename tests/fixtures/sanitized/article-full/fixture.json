@@ -1,0 +1,52 @@
+{
+  "data": {
+    "tweetResult": {
+      "result": {
+        "__typename": "Tweet",
+        "rest_id": "9000000000000000105",
+        "core": {
+          "user_results": {
+            "result": {
+              "rest_id": "90001",
+              "core": {
+                "screen_name": "fixture_author",
+                "name": "Fixture Author"
+              },
+              "legacy": {
+                "followers_count": 10
+              }
+            }
+          }
+        },
+        "legacy": {
+          "id_str": "9000000000000000105",
+          "user_id_str": "90001",
+          "full_text": "Article link",
+          "created_at": "Mon Jan 15 12:00:00 +0000 2024",
+          "entities": {
+            "hashtags": [],
+            "user_mentions": [],
+            "urls": []
+          }
+        },
+        "article": {
+          "article_results": {
+            "result": {
+              "title": "Synthetic full article",
+              "content_state": {
+                "blocks": [
+                  {
+                    "type": "unstyled",
+                    "text": "Complete article body supplied in the response."
+                  }
+                ],
+                "entityMap": []
+              },
+              "media_entities": []
+            }
+          }
+        }
+      }
+    }
+  }
+}

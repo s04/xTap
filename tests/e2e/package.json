@@ -9,6 +9,6 @@
     "teardown": "node native-host-bootstrap.js --teardown"
   },
   "dependencies": {
-    "playwright": "^1.59.1"
+    "playwright": "^1.65.1"
   }
 }

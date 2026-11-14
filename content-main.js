@@ -37,7 +37,7 @@
   const patchedFetch = async function fetch(...args) {
     const response = await originalFetch.apply(this, args);
     try {
-      const url = (typeof args[0] === 'string') ? args[0] : args[0]?.url;
+      const url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url ?? args[0]?.href);
       if (url && url.includes(GRAPHQL_PATTERN)) {
         const clone = response.clone();
         clone.json().then(data => dispatchData(url, data)).catch(() => {});
@@ -65,7 +65,7 @@
           try {
             const mappedUrl = xhrUrls.get(this);
             if (!mappedUrl) return;
-            const data = JSON.parse(this.responseText);
+            const data = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
             dispatchData(mappedUrl, data);
           } catch (_) {}
         });

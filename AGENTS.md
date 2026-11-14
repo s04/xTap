@@ -20,7 +20,7 @@ content-bridge.js (ISOLATED world)
   ▼
 background.js (Service Worker, ES module)
   │  Parses tweet data via lib/tweet-parser.js
-  │  Deduplicates (Set of seen IDs, max 50k; session storage in dev, local in prod)
+  │  Deduplicates (Set of seen IDs, max 50k; durable local storage)
   │  Batches (50 tweets or 30–45s jittered flush)
   │  Debug logging: intercepts console.log/warn/error, sends to host
   │  Transport: HTTP daemon only (reprobes on failure with 30s cooldown)
@@ -55,9 +55,9 @@ media-manifest.jsonl     (when image download enabled — append-only download l
 - **HTTP-only transport:** All data flows through the HTTP daemon (`xtap_daemon.py`), managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes, allowing writes to protected paths. If the daemon goes down, tweets are buffered in memory and the extension reprobes every 30 seconds until the daemon recovers.
 - **Token bootstrap via native messaging:** On first run, the extension connects to `xtap_host.py` via native messaging to request `GET_TOKEN` (reads `~/.xtap/secret`). The token is cached in `chrome.storage.local` for subsequent HTTP requests. The native host handles nothing else — all data goes through HTTP.
 - **Shared core logic:** `xtap_core.py` contains all file I/O logic (load seen IDs, resolve output dir, write tweets/logs, test path), used by `xtap_daemon.py`.
-- **Environment detection:** `isDevMode = !chrome.runtime.getManifest().update_url` — packed CWS extensions have `update_url`, unpacked don't. Used to switch seenIds storage between session (dev) and local (production).
-- **Volatile dev cache:** In dev mode (unpacked), `seenIds` is stored in `chrome.storage.session`, which clears on extension reload. This eliminates the need to manually clear storage during development. Production behavior is unchanged (persisted to `chrome.storage.local`).
-- **Dedup in service worker:** Multiple tabs feed the same service worker. `seenIds` Set (max 50,000, FIFO eviction) prevents duplicates. In production, persisted to `chrome.storage.local` across sessions; in dev mode, uses volatile `chrome.storage.session`. Both host and daemon also load seen IDs from existing JSONL files on startup.
+- **Durable capture state:** Keep pending posts, staged responses and dedup IDs in `chrome.storage.local` in every browser and install mode. Migrate legacy session state before capture and remove it only after the local write succeeds. Do not infer Firefox durability from Chrome's `update_url` field.
+- **Session counter:** Persist `sessionCount` in `chrome.storage.session` across background restarts; use local storage only when session storage is unavailable. Accepted observations are not proof of a disk write.
+- **Dedup in background:** Multiple tabs share the dedup Set (max 50,000, FIFO eviction). The daemon also loads seen IDs from existing JSONL files on startup.
 - **Image backfill bypass:** When image download is enabled, duplicate tweets with photo URLs may be forwarded to the daemon once per service-worker session so skipped images can be downloaded. These forwards emit `IMAGE_BACKFILL` trace events and do not increment `sessionCount` or `allTimeCount`; toggling image download from off to on clears the session-only backfill cache so tweets can be rechecked.
 - **Jittered flush:** Batch flush uses `setTimeout` with randomized interval (30s base + up to 50% jitter = 30–45s), re-randomized each cycle. Avoids clockwork-regular patterns.
 - **Path validation:** When the user sets a custom output directory, the service worker sends a `TEST_PATH` request to the HTTP daemon, which attempts `makedirs` + write/delete of a temp file before accepting the path.
@@ -122,9 +122,9 @@ The tweet parser (`lib/tweet-parser.js`) has known instruction paths for:
 
 `HomeTimeline`, `HomeLatestTimeline`, `UserTweets`, `UserTweetsAndReplies`, `UserMedia`, `UserLikes`, `TweetDetail`, `SearchTimeline`, `ListLatestTweetsTimeline`, `Bookmarks`, `Likes`, `CommunityTweetsTimeline`, `BookmarkFolderTimeline`
 
-`TweetResultByRestId` is also handled — it returns a single tweet (not a timeline). Full article payloads from this endpoint are captured when `content_state.blocks` is present; article stubs without the body are skipped so they do not poison dedup.
+`TweetResultByRestId` is also handled — it returns a single tweet (not a timeline). Full article payloads from this endpoint are captured when `content_state.blocks` is present; article previews are retained with `is_article_preview` and must never consume the full-article dedup key.
 
-Unknown endpoints fall back to a recursive search for `instructions[]` arrays (max depth 5). Non-tweet endpoints are filtered in `background.js` via `IGNORED_ENDPOINTS`.
+Unknown endpoints fall back to a recursive search for `instructions[]` arrays (max depth 12). Responses are also scanned for full typed Tweet objects outside timeline entries, covering posts embedded in Spaces and notifications; ID-only references are excluded. Non-tweet endpoints are filtered in `background.js` via `IGNORED_ENDPOINTS`.
 
 ## Output Schema
 
@@ -177,7 +177,7 @@ Each JSONL line contains:
 }
 ```
 
-Notes: `media[].duration_ms` only present for videos. `views` may be `null`. For retweets, `text` contains the full original tweet text (not the truncated `RT @user:` form). For articles, `is_article` and `article` are present — `article.text` is a markdown rendering with inline `![](media/<id>/file)` image refs, `article.blocks` preserves the raw Draft.js structure, and `article.media[]` lists images with CDN URLs and local paths. Article stubs without `content_state.blocks` are skipped rather than saved as incomplete rows, so a later full article payload can still be captured. Top-level `media[]` entries deliberately do NOT carry `local_path` — when image download is enabled, photos land at `media/<tweet_id>/<basename(url)>` by convention. Consumers reconstruct the path; the daemon never round-trips it through the JSONL.
+Notes: `media[].duration_ms` only present for videos. `views` may be `null`. For retweets, `text` contains the full original tweet text (not the truncated `RT @user:` form). For articles, `is_article` and `article` are present — `article.text` is a markdown rendering with inline `![](media/<id>/file)` image refs, `article.blocks` preserves the raw Draft.js structure, and `article.media[]` lists images with CDN URLs and local paths. Article previews without `content_state.blocks` use `is_article_preview` and `article_preview`, leaving `is_article` absent so a later full article is still accepted. Top-level `media[]` entries deliberately do NOT carry `local_path` — when image download is enabled, photos land at `media/<tweet_id>/<basename(url)>` by convention. Consumers reconstruct the path; the daemon never round-trips it through the JSONL.
 
 ## Known Issues
 
@@ -201,7 +201,7 @@ X sometimes returns `TimelineTweet` entries where `tweet_results.result` is miss
 - **Adding a fixture from a dump:** Discovery mode auto-dumps the first response per endpoint per session to the output dir as `dump-{endpoint}-{timestamp}.json` (in `{ endpoint, data }` envelope format). Feed directly to the sanitizer: `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`. This produces `tests/fixtures/sanitized/<scenario-name>/` with fixture.json, expected.jsonl, and manifest.json. Both parser and E2E tests pick it up automatically.
 - **Workflow for supporting a new endpoint:** (1) Human enables discovery mode and browses X normally — dumps appear automatically for every endpoint, (2) run `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`, (3) run `node --test tests/parser-golden.test.mjs` — if it fails, the parser doesn't handle this endpoint yet, (4) fix the parser in `lib/tweet-parser.js`, (5) re-run parser test until green (ms feedback loop), (6) regenerate expected: re-run sanitize.mjs (overwrites).
 - **Debugging:** Enable "Debug logging to file" in the debug dashboard (popup → "Debug Dashboard"). Logs write to `debug-YYYY-MM-DD.log` in the output directory. Service worker console is visible in each browser's extension debugger. The debug dashboard also shows live capture events with accept/dedup/error status, transport health, and a parser sandbox for testing `extractTweets` against raw JSON.
-- **Dev mode seenIds:** In dev mode, `seenIds` uses `chrome.storage.session` when available (volatile — clears on extension reload). If session storage APIs are unavailable, it safely falls back to `chrome.storage.local`.
+- **Test isolation:** Use separate profiles for testing; unpacked extensions retain the same durable capture state as installed extensions.
 - **tweet-parser.js** is the most fragile file — it handles multiple GraphQL response shapes and X changes their API schema without notice. The recursive fallback (`findInstructionsRecursive`) catches many new endpoint shapes automatically, but field-level changes to tweet objects will need manual updates to `normalizeTweet()`.
 - **Service worker module:** `background.js` is loaded as an ES module (`"type": "module"` in manifest). It imports `tweet-parser.js` directly.
 - **HTTP daemon:** `xtap_daemon.py` binds `127.0.0.1:17381`. Auth token stored at `~/.xtap/secret` (mode 600). Managed by launchd (macOS: `launchctl kickstart -k gui/$(id -u)/com.xtap.daemon`), systemd (Linux: `systemctl --user restart com.xtap.daemon`), or Scheduled Task (Windows: `Stop-ScheduledTask -TaskName xTapDaemon; Start-ScheduledTask -TaskName xTapDaemon`). Logs: macOS/Windows at `~/.xtap/daemon-stderr.log`, Linux via `journalctl --user -u com.xtap.daemon`.
@@ -270,3 +270,7 @@ command. The user reviews on GitHub and clicks Publish.
 - Every change must maintain zero network footprint. This is the core promise.
 - Stealth constraints are non-negotiable — review the list above before submitting changes.
 - **Update README.md and AGENTS.md after every relevant change** — new features, changed behavior, new config options, output format changes, new endpoints, architectural changes, etc. Both files must stay in sync with the code.
+
+- Preserve every supplied video variant and thumbnail URL; keep the best MP4 in `media[].url` for downloader compatibility.
+- Capture nested quotes and reposted originals as separate posts with their own author and media.
+- Run the isolated Firefox pipeline check in `tests/e2e/firefox-jsonl-test.py` for capture or lifecycle changes; never replay fixtures against X or a production archive.

@@ -165,6 +165,15 @@ class TestWriteTweets:
         assert dupes == 0
         assert xtap_core._article_seen_key('1') in seen
 
+    def test_article_preview_then_full_body_survives_daemon_restart(self, tmp_path):
+        preview = {'id': 'preview-1', 'text': 'Partial', 'is_article_preview': True}
+        full = {'id': 'preview-1', 'text': 'Complete article', 'is_article': True}
+        assert xtap_core.write_tweets([preview], str(tmp_path), set()) == (1, 0)
+        seen = xtap_core.load_seen_ids(str(tmp_path))
+        assert xtap_core.write_tweets([full], str(tmp_path), seen) == (1, 0)
+        seen = xtap_core.load_seen_ids(str(tmp_path))
+        assert xtap_core.write_tweets([full], str(tmp_path), seen) == (0, 1)
+
     def test_repeated_full_article_is_deduped(self, tmp_path):
         seen = {'1', xtap_core._article_seen_key('1')}
         tweets = [{'id': '1', 'text': 'same article', 'is_article': True}]

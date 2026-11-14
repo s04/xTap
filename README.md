@@ -347,7 +347,7 @@ Output is written to daily files (`tweets-YYYY-MM-DD.jsonl`). Each line is a sel
 }
 ```
 
-For regular tweets, `is_article` and `article` are absent. For articles, `text` contains a markdown-style rendering of the article with inline image references pointing to `media/<tweet_id>/`. Article stubs without `content_state.blocks` are skipped rather than saved as incomplete rows.
+For regular tweets, `is_article` and `article` are absent. For articles, `text` contains a markdown-style rendering of the article with inline image references pointing to `media/<tweet_id>/`. Article previews are retained with `is_article_preview: true` and `article_preview: {title, text}`. They do not set `is_article`, so opening the full article can append its body under the same post ID. Choose the full article when both observations exist. Video and GIF media retain all supplied URLs in `variants` (including streaming playlists), plus `thumbnail_url`; `url` remains the highest-bitrate MP4 for compatibility. Reposted originals and nested quoted posts are saved separately with their own author and media.
 
 ### Media file convention
 
@@ -392,7 +392,7 @@ After modifying extension files (`background.js`, `lib/`, `content-*.js`, `popup
 
 **Debug dashboard:** Click "Debug Dashboard" in the popup to open a live view of capture events, transport health, and a parser sandbox for testing `extractTweets` against raw GraphQL JSON. Debug logging and discovery mode toggles are also here — enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
 
-**Dev mode:** When loaded unpacked (developer mode), the extension prefers `chrome.storage.session` for the `seenIds` dedup cache, and falls back to `chrome.storage.local` if session storage APIs are unavailable. When session storage is available, reloading the extension automatically clears the cache — no need to manually clear storage between test runs.
+**Capture persistence:** Pending posts, staged responses and the dedup cache use `chrome.storage.local` in both browsers, including unpacked installations. They survive browser restarts. Existing session queues migrate automatically before capture starts. The session counter uses `chrome.storage.session`, so background suspension does not reset it; restarting the browser or reloading the extension starts a new session. Browsers without session storage retain the counter locally. Counters measure accepted observations, not confirmed disk writes. Use a separate browser profile for tests.
 
 After modifying Python host files (`xtap_core.py`, `xtap_host.py`, `xtap_daemon.py`), the native host picks up changes on next browser restart. To restart the HTTP daemon immediately:
 
@@ -437,3 +437,12 @@ checklist are documented in `tests/fixtures/FIXTURES.md`.
 ## License
 
 [MIT](LICENSE) — use it however you like.
+
+
+### Firefox capture regression checks
+
+Run `uv run --with camoufox==0.5.9 --with marionette-driver python tests/e2e/firefox-jsonl-test.py` after `uvx camoufox fetch`. The test loads the real extension in a separate profile and fulfills every page request locally. Its daemon uses a separate port, token and output directory; it never contacts X or writes synthetic posts into your archive. Chromium checks remain `cd tests/e2e && npm ci && npm test`.
+
+For interactive Camoufox testing, enable its `allow_addon_new_tab=True` option so extension dashboard tabs are permitted. Keep the profile and generated browser configuration persistent. Camoufox needs the Playwright version supported by its package; a newer driver can reject its protocol.
+
+Capture remains passive: article bodies and video URLs are retained only when supplied to the browser. ID-only references and unavailable posts cannot supply missing content. Discovery dumps and debug logs are private diagnostic data; do not commit them.

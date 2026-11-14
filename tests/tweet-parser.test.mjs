@@ -221,7 +221,7 @@ describe('normalizeTweet', () => {
     assert.equal(t.article.title, 'My Article');
   });
 
-  it('skips article stubs without full content', () => {
+  it('preserves an explicitly marked article preview without claiming a full body', () => {
     const raw = makeRawTweet({
       article: {
         article_results: {
@@ -232,7 +232,10 @@ describe('normalizeTweet', () => {
         },
       },
     });
-    assert.equal(normalizeTweet(raw), null);
+    const preview = normalizeTweet(raw);
+    assert.equal(preview.is_article_preview, true);
+    assert.equal(preview.is_article, undefined);
+    assert.deepEqual(preview.article_preview, {title:'Stub only', text:'Preview only'});
   });
 
   it('converts created_at to ISO format', () => {
@@ -585,7 +588,7 @@ describe('extractTweets', () => {
     assert.equal(tweets[0].is_article, true);
   });
 
-  it('TweetResultByRestId with article stub returns no tweet', () => {
+  it('TweetResultByRestId with article stub retains its preview', () => {
     const raw = makeRawTweet({
       article: {
         article_results: {
@@ -600,10 +603,12 @@ describe('extractTweets', () => {
       data: { tweetResult: { result: raw } },
     };
     const tweets = extractTweets('TweetResultByRestId', data);
-    assert.deepStrictEqual(tweets, []);
+    assert.equal(tweets.length, 1);
+    assert.equal(tweets[0].is_article_preview, true);
+    assert.equal(tweets[0].is_article, undefined);
   });
 
-  it('timeline article stub returns no tweet', () => {
+  it('timeline article stub retains its preview', () => {
     const raw = makeRawTweet({
       article: {
         article_results: {
@@ -616,7 +621,9 @@ describe('extractTweets', () => {
     });
     const data = makeTimelineResponse(raw);
     const tweets = extractTweets('HomeTimeline', data);
-    assert.deepStrictEqual(tweets, []);
+    assert.equal(tweets.length, 1);
+    assert.equal(tweets[0].is_article_preview, true);
+    assert.equal(tweets[0].is_article, undefined);
   });
 
   it('skips cursor entries', () => {
@@ -1116,3 +1123,66 @@ describe('quoted tweet extraction', () => {
   });
 });
 
+
+
+describe('live Firefox capture regressions', () => {
+  it('captures nested quotes and originals while ignoring ID-only references', () => {
+    const nested = makeRawTweet({ rest_id:'300', legacy:{id_str:'300'},
+      quotedRefResult:{result:{__typename:'Tweet',rest_id:'400'}} });
+    const quote = makeQuotedRawTweet();
+    quote.nested_quoted_tweet_results = {result:nested};
+    quote.quotedRefResult = {result:{__typename:'Tweet',rest_id:'300'}};
+    const root = makeRawTweet({ quoted_status_result:{result:quote} });
+    const rows = extractTweets('HomeTimeline',makeTimelineResponse(root));
+    assert.deepEqual(rows.map(r=>r.id),['100','200','300']);
+  });
+
+  it('captures a reposted original with its own author and video URLs', () => {
+    const original = makeQuotedRawTweet();
+    original.legacy.extended_entities = {media:[{type:'video',video_info:{variants:[
+      {content_type:'video/mp4',bitrate:100,url:'https://video.twimg.com/original.mp4'}
+    ]}}]};
+    const root = makeRawTweet({legacy:{retweeted_status_result:{result:original}}});
+    const rows = extractTweets('HomeTimeline',makeTimelineResponse(root));
+    const saved = rows.find(r=>r.id==='200');
+    assert.equal(saved.author.username,'quoteduser');
+    assert.equal(saved.media[0].url,'https://video.twimg.com/original.mp4');
+  });
+
+  it('retains stream URLs even when no MP4 was supplied', () => {
+    const media=extractMedia({extended_entities:{media:[{type:'video',
+      media_url_https:'https://pbs.twimg.com/thumbnail.jpg',video_info:{variants:[
+        {content_type:'application/x-mpegURL',url:'https://video.twimg.com/stream.m3u8'},
+        {content_type:'video/mp4'}
+      ]}}]}});
+    assert.equal(media[0].url,null);
+    assert.deepEqual(media[0].variants,[{content_type:'application/x-mpegURL',url:'https://video.twimg.com/stream.m3u8',bitrate:null}]);
+    assert.equal(media[0].thumbnail_url,'https://pbs.twimg.com/thumbnail.jpg');
+  });
+});
+
+
+describe('profile feed instruction paths', () => {
+  for (const endpoint of ['UserOriginalsTimeline', 'FutureProfileTimeline']) {
+    it(`captures ${endpoint} at the nesting observed in Firefox`, () => {
+      const instructions=makeTimelineResponse(makeRawTweet()).data.home.home_timeline_urt.instructions;
+      const response={data:{user:{result:{timeline:{timeline:{instructions}}}}}};
+      assert.equal(extractTweets(endpoint,response)[0].id,'100');
+    });
+  }
+});
+
+
+it('captures full posts embedded in a Space response without timeline instructions', () => {
+  const response={data:{audioSpace:{result:{conversation:{posts:[
+    {tweet_results:{result:makeRawTweet()}},
+    {tweet_results:{result:{__typename:'Tweet',rest_id:'reference-only'}}}
+  ]}}}}};
+  const rows=extractTweets('AudioSpaceById',response);
+  assert.deepEqual(rows.map(r=>r.id),['100']);
+});
+
+ it('captures notification posts beside an instructions array', () => {
+  const data = { data: { notifications: { instructions: [], posts: [makeRawTweet()] } } };
+  assert.deepEqual(extractTweets('NotificationsTimeline', data).map(t => t.id), ['100']);
+});

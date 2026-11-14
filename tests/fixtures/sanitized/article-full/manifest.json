@@ -1,0 +1,11 @@
+{
+  "scenario": "article-full",
+  "endpoint": "TweetResultByRestId",
+  "description": "Synthetic regression for Firefox capture coverage",
+  "files": {
+    "fixture": "fixture.json",
+    "expected": "expected.jsonl"
+  },
+  "tweet_count": 1,
+  "notes": "Hand-written synthetic data; no account data or captured prose."
+}

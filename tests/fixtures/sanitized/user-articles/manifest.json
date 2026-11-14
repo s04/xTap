@@ -6,7 +6,7 @@
     "fixture": "fixture.json",
     "expected": "expected.jsonl"
   },
-  "tweet_count": 0,
+  "tweet_count": 12,
   "remap_stats": {
     "tweet_ids": 29,
     "user_ids": 26,
